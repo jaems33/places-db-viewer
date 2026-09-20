@@ -1,0 +1,79 @@
+[
+  {
+    "namespace": "experiments.places",
+    "description": "Privileged access to the Places database (places.sqlite).",
+    "types": [
+      {
+        "id": "TableRef",
+        "type": "object",
+        "description": "A table in one of the schemas attached to the Places connection.",
+        "properties": {
+          "schema": {
+            "type": "string",
+            "description": "The attached schema name, e.g. 'main' or 'favicons'."
+          },
+          "name": {
+            "type": "string",
+            "description": "The table name, e.g. 'moz_places'."
+          },
+          "label": {
+            "type": "string",
+            "description": "Display label: 'moz_places' for main, 'favicons.moz_icons' otherwise."
+          }
+        }
+      }
+    ],
+    "functions": [
+      {
+        "name": "getTables",
+        "type": "function",
+        "description": "List the tables and views across every schema attached to the Places connection.",
+        "async": true,
+        "parameters": []
+      },
+      {
+        "name": "getRows",
+        "type": "function",
+        "description": "Return rows from a table, along with its column names.",
+        "async": true,
+        "parameters": [
+          {
+            "type": "object",
+            "name": "options",
+            "properties": {
+              "schema": {
+                "type": "string",
+                "description": "The attached schema the table belongs to."
+              },
+              "table": {
+                "type": "string",
+                "description": "The table to read."
+              },
+              "limit": {
+                "type": "integer",
+                "optional": true,
+                "minimum": 0,
+                "description": "Maximum number of rows to return. 0 means no limit."
+              },
+              "orderBy": {
+                "type": "string",
+                "optional": true,
+                "description": "Column to sort by. Must be a real column of the table."
+              },
+              "descending": {
+                "type": "boolean",
+                "optional": true,
+                "description": "Sort in descending order."
+              },
+              "filter": {
+                "type": "string",
+                "optional": true,
+                "description": "Case-insensitive substring matched against every text column."
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+]

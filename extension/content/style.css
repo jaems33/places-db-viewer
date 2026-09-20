@@ -1,0 +1,186 @@
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0;
+  padding: 12px;
+  font: message-box;
+  font-size: 12px;
+  height: 100vh;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-family: monospace;
+}
+
+.controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+#filter {
+  width: 280px;
+}
+
+#status {
+  opacity: 0.7;
+  margin-left: auto;
+}
+
+/* Grid and detail sidebar sit side by side and share the space below the
+   controls. */
+#main {
+  flex: 1;
+  display: flex;
+  gap: 10px;
+  min-height: 0;
+}
+
+/* The table is wider than the viewport with all 19 columns, so it scrolls
+   in both directions inside this container while the header stays put. */
+#tableContainer {
+  flex: 1;
+  overflow: auto;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  min-width: 0;
+}
+
+#details {
+  flex: 0 0 340px;
+  overflow: auto;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  padding: 0 10px 10px;
+}
+
+.details-header {
+  position: sticky;
+  top: 0;
+  background: Field;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+}
+
+.details-header h2 {
+  margin: 0;
+  font-size: 12px;
+}
+
+#closeDetails {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 6px;
+  color: inherit;
+}
+
+#closeDetails:hover {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+
+#detailsBody {
+  margin: 0;
+}
+
+#detailsBody dt {
+  margin-top: 10px;
+  font-family: monospace;
+  font-weight: bold;
+  opacity: 0.75;
+}
+
+#detailsBody dd {
+  margin: 2px 0 0;
+  font-family: monospace;
+  /* The whole point of the panel: values wrap instead of being truncated. */
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+#detailsBody dd .raw {
+  display: block;
+  opacity: 0.5;
+  font-size: 11px;
+}
+
+table {
+  border-collapse: collapse;
+  white-space: nowrap;
+}
+
+th,
+td {
+  padding: 3px 8px;
+  text-align: left;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: Field;
+  cursor: pointer;
+  user-select: none;
+  font-family: monospace;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+}
+
+th:hover {
+  background: color-mix(in srgb, currentColor 10%, Field);
+}
+
+th.sorted::after {
+  content: " ▲";
+  opacity: 0.6;
+}
+
+th.sorted[data-direction="desc"]::after {
+  content: " ▼";
+}
+
+td {
+  font-family: monospace;
+}
+
+td.null {
+  opacity: 0.4;
+  font-style: italic;
+}
+
+td.blob {
+  opacity: 0.6;
+  font-style: italic;
+}
+
+#table {
+  max-width: 260px;
+}
+
+tbody tr:hover {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+tbody tr.selected,
+tbody tr.selected:hover {
+  background: SelectedItem;
+  color: SelectedItemText;
+}
+
+tbody tr {
+  cursor: pointer;
+}

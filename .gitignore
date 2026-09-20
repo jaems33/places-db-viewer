@@ -1,0 +1,13 @@
+# Local Claude Code settings (machine-specific absolute paths)
+.claude/
+
+# Unrelated third-party helper kept locally
+script-schemacrawler-on-macos.sh
+script-schemacrawler-on-macos.sh\ 
+
+# Built artifacts
+*.xpi
+node_modules/
+
+# macOS
+.DS_Store
