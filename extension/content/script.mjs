@@ -20,6 +20,26 @@ const MILLISECOND_COLUMNS = {
   moz_icons: ["expire_ms"],
 };
 
+// moz_historyvisits.visit_type holds an nsINavHistoryService TRANSITION_*
+// constant. The names mirror the interface so a value here can be matched
+// against the IDL and against telemetry that reports the same numbers.
+const VISIT_TYPES = {
+  1: "LINK",
+  2: "TYPED",
+  3: "BOOKMARK",
+  4: "EMBED",
+  5: "REDIRECT_PERMANENT",
+  6: "REDIRECT_TEMPORARY",
+  7: "DOWNLOAD",
+  8: "FRAMED_LINK",
+  9: "RELOAD",
+};
+
+// Columns holding an enum that is shown by name, keyed by table.
+const ENUM_COLUMNS = {
+  moz_historyvisits: { visit_type: VISIT_TYPES },
+};
+
 const DEFAULT_TABLE = { schema: "main", name: "moz_places" };
 
 const $ = id => document.getElementById(id);
@@ -29,6 +49,10 @@ let state = {
   current: DEFAULT_TABLE,
   columns: [],
   blobColumns: new Set(),
+  // Columns the API synthesised (resolved URLs and the like) rather than read
+  // from the table. Marked in the header so the grid does not imply they are
+  // stored.
+  derivedColumns: new Set(),
   rows: [],
   orderBy: null,
   descending: false,
@@ -80,6 +104,16 @@ function formatValue(column, value) {
     return { text: formatTime(value, 1), raw: String(value), className: "" };
   }
 
+  const names = ENUM_COLUMNS[table]?.[column];
+  if (names) {
+    // An unrecognised value is shown as-is rather than hidden behind a
+    // placeholder: new transition types get added over time.
+    const name = names[value];
+    return name
+      ? { text: name, raw: String(value), className: "" }
+      : { text: String(value), raw: null, className: "" };
+  }
+
   return { text: String(value), raw: null, className: "" };
 }
 
@@ -114,6 +148,10 @@ function renderHeader() {
   for (const column of state.columns) {
     const th = document.createElement("th");
     th.textContent = column;
+    if (state.derivedColumns.has(column)) {
+      th.classList.add("derived");
+      th.title = `${column} is derived by the viewer, not stored in this table`;
+    }
     if (column === state.orderBy) {
       th.classList.add("sorted");
       th.dataset.direction = state.descending ? "desc" : "asc";
@@ -251,6 +289,7 @@ async function load() {
 
     state.columns = result.columns;
     state.blobColumns = new Set(result.blobColumns);
+    state.derivedColumns = new Set(result.derivedColumns ?? []);
     state.rows = result.rows;
     state.total = result.total;
     // Row indices refer to different records after a sort, filter or table

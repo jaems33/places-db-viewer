@@ -27,6 +27,34 @@ const DEFAULT_LIMIT = 1000;
 // per row. In current profiles the only such column is moz_icons.data.
 const isBlob = column => column.type === "BLOB";
 
+// Extra read-only columns appended to a table's real ones, for tables whose
+// raw rows are hard to read on their own. Each entry supplies the JOINs it
+// needs and a SELECT expression per derived column; both are constants here,
+// never caller input, so they are interpolated directly.
+//
+// moz_historyvisits stores two moz_places ids and nothing else identifying,
+// so a visit row cannot be read without cross-referencing another table.
+const DERIVED_COLUMNS = {
+  "main.moz_historyvisits": {
+    joins: `LEFT JOIN "main"."moz_places" AS derived_place
+              ON derived_place.id = "main"."moz_historyvisits".place_id
+            LEFT JOIN "main"."moz_historyvisits" AS derived_from
+              ON derived_from.id = "main"."moz_historyvisits".from_visit
+            LEFT JOIN "main"."moz_places" AS derived_from_place
+              ON derived_from_place.id = derived_from.place_id`,
+    columns: {
+      place_url: "derived_place.url",
+      // from_visit is a visit id, not a place id, so resolving it to a URL
+      // goes through moz_historyvisits first. A value of 0 means "no
+      // referring visit" and matches no row, yielding NULL.
+      from_visit_url: "derived_from_place.url",
+    },
+  },
+};
+
+const derivedFor = resolved =>
+  DERIVED_COLUMNS[`${resolved.schema}.${resolved.name}`] ?? null;
+
 function withDb(name, task) {
   return PlacesUtils.withConnectionWrapper(`PlacesDBViewer: ${name}`, task);
 }
@@ -111,7 +139,9 @@ async function getRows(options) {
 
   return withDb("getRows", async db => {
     const columns = await readColumns(db, resolved.schema, resolved.name);
-    const columnNames = columns.map(c => c.name);
+    const derived = derivedFor(resolved);
+    const derivedNames = derived ? Object.keys(derived.columns) : [];
+    const columnNames = [...columns.map(c => c.name), ...derivedNames];
     const quotedTable = `"${resolved.schema}"."${resolved.name}"`;
 
     // `orderBy` is interpolated, so it must exactly match a real column.
@@ -120,7 +150,10 @@ async function getRows(options) {
       if (!columnNames.includes(orderBy)) {
         throw new Error(`Unknown column on ${resolved.label}: ${orderBy}`);
       }
-      orderClause = ` ORDER BY "${orderBy}" ${descending ? "DESC" : "ASC"}`;
+      // Derived columns are expressions rather than columns of the table, and
+      // a bare name would be ambiguous once the joins are in play.
+      const orderExpr = derived?.columns[orderBy] ?? `${quotedTable}."${orderBy}"`;
+      orderClause = ` ORDER BY ${orderExpr} ${descending ? "DESC" : "ASC"}`;
     }
 
     // The filter is user input, so it is bound. It is applied across every
@@ -129,10 +162,13 @@ async function getRows(options) {
     const params = {};
     let whereClause = "";
     if (filter) {
-      const searchable = columns.filter(c => !isBlob(c));
+      const searchable = [
+        ...columns.filter(c => !isBlob(c)).map(c => `${quotedTable}."${c.name}"`),
+        ...derivedNames.map(name => derived.columns[name]),
+      ];
       if (searchable.length) {
         const conditions = searchable.map(
-          c => `IFNULL(CAST("${c.name}" AS TEXT), '') LIKE :filter ESCAPE '/'`
+          expr => `IFNULL(CAST(${expr} AS TEXT), '') LIKE :filter ESCAPE '/'`
         );
         whereClause = ` WHERE ${conditions.join(" OR ")}`;
         // Escape LIKE wildcards so a literal % or _ is matched literally.
@@ -149,13 +185,17 @@ async function getRows(options) {
 
     // Select columns explicitly so BLOBs can be reduced to a length summary
     // instead of being copied across the process boundary.
-    const selectList = columns
-      .map(c =>
-        isBlob(c) ? `LENGTH("${c.name}") AS "${c.name}"` : `"${c.name}"`
-      )
-      .join(", ");
+    const selectList = [
+      ...columns.map(c =>
+        isBlob(c)
+          ? `LENGTH(${quotedTable}."${c.name}") AS "${c.name}"`
+          : `${quotedTable}."${c.name}"`
+      ),
+      ...derivedNames.map(name => `${derived.columns[name]} AS "${name}"`),
+    ].join(", ");
 
-    const sql = `SELECT ${selectList} FROM ${quotedTable}${whereClause}${orderClause}${limitClause}`;
+    const joinClause = derived ? ` ${derived.joins}` : "";
+    const sql = `SELECT ${selectList} FROM ${quotedTable}${joinClause}${whereClause}${orderClause}${limitClause}`;
     const rows = await db.execute(sql, params);
 
     const countRow = await db.execute(
@@ -168,6 +208,7 @@ async function getRows(options) {
     return {
       columns: columnNames,
       blobColumns,
+      derivedColumns: derivedNames,
       total,
       // INTEGER columns arrive as doubles (mozStorageStatementRow.cpp reads
       // both INTEGER and FLOAT via GetDouble), so values above 2^53 would lose

@@ -144,6 +144,13 @@ th:hover {
   background: color-mix(in srgb, currentColor 10%, Field);
 }
 
+/* Columns the viewer derives from another table, rather than columns of the
+   table being shown. Italic so the distinction is visible without a legend. */
+th.derived {
+  font-style: italic;
+  opacity: 0.85;
+}
+
 th.sorted::after {
   content: " ▲";
   opacity: 0.6;

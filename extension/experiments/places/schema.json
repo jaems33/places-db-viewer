@@ -34,7 +34,7 @@
       {
         "name": "getRows",
         "type": "function",
-        "description": "Return rows from a table, along with its column names.",
+        "description": "Return rows from a table, along with its column names. Some tables gain extra derived columns (reported in derivedColumns) that resolve foreign keys to something readable.",
         "async": true,
         "parameters": [
           {
