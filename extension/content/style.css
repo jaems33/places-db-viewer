@@ -53,8 +53,10 @@ h1 {
   min-width: 0;
 }
 
+/* Wide enough for the seven-column frecency sample table; the column values
+   themselves are short, so this is close to its natural width. */
 #details {
-  flex: 0 0 340px;
+  flex: 0 0 460px;
   overflow: auto;
   border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
   padding: 0 10px 10px;
@@ -112,6 +114,91 @@ h1 {
   display: block;
   opacity: 0.5;
   font-size: 11px;
+}
+
+/* Frecency breakdown, shown under the column list for moz_places rows. */
+.frecency {
+  margin-top: 16px;
+  border-top: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  padding-top: 8px;
+}
+
+.frecency h3 {
+  margin: 0 0 6px;
+  font-size: 12px;
+}
+
+.frecency-note {
+  margin: 8px 0 0;
+  opacity: 0.65;
+  line-height: 1.45;
+}
+
+.frecency-summary {
+  margin: 0;
+}
+
+.frecency-summary dt {
+  margin-top: 8px;
+  font-family: monospace;
+  font-weight: bold;
+  opacity: 0.75;
+}
+
+.frecency-summary dd {
+  margin: 2px 0 0;
+  font-family: monospace;
+  overflow-wrap: anywhere;
+}
+
+.frecency-summary dd .raw {
+  display: block;
+  opacity: 0.5;
+  font-size: 11px;
+  font-weight: normal;
+}
+
+.frecency-samples {
+  margin-top: 10px;
+  width: 100%;
+  font-size: 11px;
+}
+
+/* The shared th rules make grid headers sticky and clickable; neither applies
+   here, and sticky would float them over the surrounding panel while it
+   scrolls. */
+.frecency-samples th {
+  position: static;
+  cursor: default;
+  font-size: 11px;
+  padding: 2px 4px;
+  max-width: none;
+}
+
+.frecency-samples th:hover {
+  background: Field;
+}
+
+.frecency-samples td {
+  padding: 2px 4px;
+  max-width: none;
+}
+
+.frecency-samples .num {
+  text-align: right;
+}
+
+/* A visit the interaction data marked as interesting, which is what upgraded
+   its weight a tier. */
+.frecency-samples tr.interesting td {
+  font-weight: bold;
+}
+
+/* A sample synthesised from moz_places_metadata with no moz_historyvisits row
+   behind it. */
+.frecency-samples tr.virtual td {
+  font-style: italic;
+  opacity: 0.8;
 }
 
 table {

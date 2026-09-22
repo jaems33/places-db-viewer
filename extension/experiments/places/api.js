@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* global ExtensionAPI */
+/* global ExtensionAPI, Services */
 
 let PlacesUtils;
 
@@ -20,6 +20,38 @@ try {
 }
 
 const DEFAULT_LIMIT = 1000;
+
+// The parameters calculate_frecency binds from StaticPrefs, with the same
+// defaults as StaticPrefList.yaml. They are `mirror: once`, so the running
+// browser is using the value read at startup; Services.prefs is the closest we
+// can get to that from here, and it agrees unless someone changed a pref
+// mid-session.
+const FRECENCY_PREFS = {
+  halfLifeDays: ["places.frecency.pages.halfLifeDays", 30],
+  numSampledVisits: ["places.frecency.pages.numSampledVisits", 10],
+  lowWeight: ["places.frecency.pages.lowWeight", 20],
+  mediumWeight: ["places.frecency.pages.mediumWeight", 50],
+  highWeight: ["places.frecency.pages.highWeight", 100],
+  veryHighWeight: ["places.frecency.pages.veryHighWeight", 200],
+  maxVisitGapSeconds: [
+    "places.frecency.pages.interactions.maxVisitGapSeconds",
+    120,
+  ],
+  viewTimeSeconds: ["places.frecency.pages.interactions.viewTimeSeconds", 60],
+  manyKeypresses: ["places.frecency.pages.interactions.manyKeypresses", 50],
+  viewTimeIfManyKeypressesSeconds: [
+    "places.frecency.pages.interactions.viewTimeIfManyKeypressesSeconds",
+    20,
+  ],
+};
+
+const readFrecencyPrefs = () =>
+  Object.fromEntries(
+    Object.entries(FRECENCY_PREFS).map(([name, [pref, fallback]]) => [
+      name,
+      Services.prefs.getIntPref(pref, fallback),
+    ])
+  );
 
 // BLOB columns are identified by their declared type rather than by name.
 // Their contents are summarised as a byte length rather than returned, so the
@@ -226,6 +258,227 @@ async function getRows(options) {
   });
 }
 
+// The CTE chain from CalculateFrecencyFunction::OnFunctionCall in
+// toolkit/components/places/SQLFunctions.cpp, copied verbatim down to
+// `samples` so the breakdown describes what the real function did rather than
+// a re-derivation of it. Keep this in sync with that function.
+//
+// The one deliberate difference: `visits` also selects the columns that
+// explain each weight (visit type, source, redirect status, interestingness),
+// which the browser's version has no reason to carry.
+const FRECENCY_SAMPLES_CTE = `
+  WITH
+  lambda (lambda) AS (
+    SELECT ln(2) / :halfLifeDays
+  ),
+  interactions AS (
+    SELECT place_id, created_at * 1000 AS visit_date
+    FROM moz_places_metadata
+    WHERE place_id = :pageId
+      AND (total_view_time >= :viewTimeSeconds * 1000
+        OR (total_view_time >= :viewTimeIfManyKeypressesSeconds * 1000
+          AND key_presses >= :manyKeypresses))
+    ORDER BY created_at DESC
+    LIMIT :numSampledVisits
+  ),
+  sampled_visits AS (
+    SELECT vs.id, vs.from_visit, vs.place_id, vs.visit_date, vs.visit_type,
+      vs.source,
+      (SELECT EXISTS (
+        SELECT 1 FROM interactions i
+        WHERE vs.visit_date BETWEEN
+          i.visit_date - :maxVisitGapSeconds * 1000000
+          AND i.visit_date + :maxVisitGapSeconds * 1000000
+      )) AS is_interesting
+    FROM moz_historyvisits vs
+    WHERE place_id = :pageId
+      AND vs.visit_type NOT IN (7, 8, 9)
+  ),
+  virtual_visits AS (
+    SELECT NULL AS id, 0 AS from_visit, i.place_id, i.visit_date,
+      1 AS visit_type, 0 AS source, 1 AS is_interesting
+    FROM interactions i
+    WHERE NOT EXISTS (
+      SELECT 1 FROM moz_historyvisits vs
+      WHERE place_id = :pageId
+        AND vs.visit_date BETWEEN
+          i.visit_date - :maxVisitGapSeconds * 1000000
+          AND i.visit_date + :maxVisitGapSeconds * 1000000
+    )
+  ),
+  visit_interaction AS (
+    SELECT * FROM sampled_visits
+    UNION ALL
+    SELECT * FROM virtual_visits
+    ORDER BY visit_date DESC
+    LIMIT :numSampledVisits
+  ),
+  visits (days, weight, visit_id, visit_date, visit_type, effective_visit_type,
+          source, is_interesting, is_redirect_target, is_redirect_source) AS (
+    SELECT
+      v.visit_date / 86400000000,
+      (SELECT CASE
+        WHEN IFNULL(s.visit_type, v.visit_type) = 3
+          OR v.source = 2
+          OR ( IFNULL(s.visit_type, v.visit_type) = 2
+            AND v.source NOT IN (1, 3)
+            AND t.id IS NULL AND NOT :isRedirect
+          )
+        THEN
+          CASE WHEN v.is_interesting = 1 THEN :veryHighWeight
+               ELSE :highWeight END
+        WHEN t.id IS NULL AND NOT :isRedirect
+         AND IFNULL(s.visit_type, v.visit_type) NOT IN (4, 8, 9)
+         AND v.source <> 1
+        THEN
+          CASE WHEN v.is_interesting = 1 THEN :highWeight
+               ELSE :mediumWeight END
+        ELSE :lowWeight
+       END),
+      v.id,
+      v.visit_date,
+      v.visit_type,
+      IFNULL(s.visit_type, v.visit_type),
+      v.source,
+      v.is_interesting,
+      s.id IS NOT NULL,
+      t.id IS NOT NULL
+    FROM visit_interaction v
+    LEFT JOIN moz_historyvisits s ON s.id = v.from_visit
+                                 AND v.visit_type IN (5,6)
+    LEFT JOIN moz_historyvisits t ON t.from_visit = v.id
+                                 AND t.visit_type IN (5,6)
+  ),
+  bookmark (days, weight, visit_id, visit_date, visit_type,
+            effective_visit_type, source, is_interesting, is_redirect_target,
+            is_redirect_source) AS (
+    SELECT max(dateAdded) / 86400000000, :highWeight, NULL, max(dateAdded),
+      NULL, NULL, NULL, 0, 0, 0
+    FROM moz_bookmarks
+    WHERE fk = :pageId
+    HAVING count(*) > 0
+  ),
+  samples AS (
+    SELECT 1 AS is_bookmark_fallback, * FROM bookmark
+      WHERE (SELECT count(*) FROM visits) = 0
+    UNION ALL
+    SELECT 0 AS is_bookmark_fallback, * FROM visits
+  ),
+  reference (days, samples_count) AS (
+    SELECT max(samples.days), count(*) FROM samples
+  )
+`;
+
+/**
+ * Re-run calculate_frecency's query for one page, exposing the intermediate
+ * values instead of only the final score.
+ *
+ * Two queries rather than one: the per-sample rows and the aggregate both come
+ * from `samples`, and SQLite cannot return a row per sample and the aggregate
+ * in the same statement without re-aggregating. They run on the same
+ * connection back to back, so they see the same data.
+ */
+async function getFrecencyBreakdown({ pageId, isRedirect = false }) {
+  const prefs = readFrecencyPrefs();
+  const params = { ...prefs, pageId, isRedirect: isRedirect ? 1 : 0 };
+
+  return withDb("getFrecencyBreakdown", async db => {
+    const placeRows = await db.execute(
+      `SELECT url, title, visit_count, frecency, recalc_frecency
+       FROM moz_places WHERE id = :pageId`,
+      { pageId }
+    );
+    if (!placeRows.length) {
+      throw new Error(`No moz_places row with id ${pageId}`);
+    }
+    const url = placeRows[0].getResultByName("url");
+    const visitCount = placeRows[0].getResultByName("visit_count");
+    const storedFrecency = placeRows[0].getResultByName("frecency");
+    const recalcFrecency = placeRows[0].getResultByName("recalc_frecency");
+
+    // Frecency is 0 by definition for place: URIs, and the query below would
+    // still report samples for one, so short-circuit the same way the final
+    // SELECT's CASE does.
+    const isPlaceUri = typeof url === "string" && url.startsWith("place:");
+
+    const sampleRows = await db.execute(
+      `${FRECENCY_SAMPLES_CTE}
+       SELECT s.*,
+         reference.days AS reference_days,
+         reference.samples_count AS samples_count,
+         (reference.days - s.days) AS age_days,
+         exp(-lambda.lambda * (reference.days - s.days)) AS decay,
+         (s.weight * exp(-lambda.lambda * (reference.days - s.days))) AS score
+       FROM samples s, reference, lambda
+       ORDER BY s.days DESC`,
+      params
+    );
+
+    const totals = await db.execute(
+      `${FRECENCY_SAMPLES_CTE},
+       scores (score) AS (
+         SELECT (weight * exp(-lambda * (reference.days - samples.days)))
+         FROM samples, reference, lambda
+       )
+       SELECT
+         lambda.lambda AS lambda,
+         reference.days AS reference_days,
+         reference.samples_count AS samples_count,
+         sum(score) AS score_sum,
+         CASE WHEN (substr(url, 0, 7) = 'place:') THEN 0
+         ELSE
+           reference.days + CAST ((
+             ln(sum(score) / samples_count * MAX(visit_count, samples_count))
+             / lambda
+           ) AS INTEGER)
+         END AS frecency
+       FROM moz_places h, reference, lambda, scores
+       WHERE h.id = :pageId`,
+      params
+    );
+
+    const total = totals[0];
+    const scoreSum = total?.getResultByName("score_sum") ?? null;
+    const samplesCount = total?.getResultByName("samples_count") ?? 0;
+
+    return {
+      pageId,
+      url,
+      title: placeRows[0].getResultByName("title"),
+      visitCount,
+      storedFrecency,
+      recalcFrecency,
+      isPlaceUri,
+      isRedirect,
+      prefs,
+      lambda: total?.getResultByName("lambda") ?? null,
+      referenceDays: total?.getResultByName("reference_days") ?? null,
+      samplesCount,
+      scoreSum,
+      // The multiplier in the final formula: a page visited more often than we
+      // sampled is scaled up by the ratio the sampling left out.
+      countMultiplier: Math.max(visitCount, samplesCount),
+      computedFrecency: total?.getResultByName("frecency") ?? null,
+      samples: sampleRows.map(row => ({
+        isBookmarkFallback: !!row.getResultByName("is_bookmark_fallback"),
+        visitId: row.getResultByName("visit_id"),
+        visitDate: row.getResultByName("visit_date"),
+        visitType: row.getResultByName("visit_type"),
+        effectiveVisitType: row.getResultByName("effective_visit_type"),
+        source: row.getResultByName("source"),
+        isInteresting: !!row.getResultByName("is_interesting"),
+        isRedirectTarget: !!row.getResultByName("is_redirect_target"),
+        isRedirectSource: !!row.getResultByName("is_redirect_source"),
+        days: row.getResultByName("days"),
+        ageDays: row.getResultByName("age_days"),
+        weight: row.getResultByName("weight"),
+        decay: row.getResultByName("decay"),
+        score: row.getResultByName("score"),
+      })),
+    };
+  });
+}
+
 var places = class extends ExtensionAPI {
   getAPI() {
     return {
@@ -233,6 +486,7 @@ var places = class extends ExtensionAPI {
         places: {
           getTables,
           getRows,
+          getFrecencyBreakdown,
         },
       },
     };

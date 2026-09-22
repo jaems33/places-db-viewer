@@ -35,9 +35,19 @@ const VISIT_TYPES = {
   9: "RELOAD",
 };
 
+// moz_historyvisits.source holds an nsINavHistoryService VISIT_SOURCE_*
+// constant. Frecency treats SPONSORED and SEARCHED as reasons to withhold the
+// typed bonus, and BOOKMARKED as a reason to grant it.
+const VISIT_SOURCES = {
+  0: "ORGANIC",
+  1: "SPONSORED",
+  2: "BOOKMARKED",
+  3: "SEARCHED",
+};
+
 // Columns holding an enum that is shown by name, keyed by table.
 const ENUM_COLUMNS = {
-  moz_historyvisits: { visit_type: VISIT_TYPES },
+  moz_historyvisits: { visit_type: VISIT_TYPES, source: VISIT_SOURCES },
 };
 
 const DEFAULT_TABLE = { schema: "main", name: "moz_places" };
@@ -59,9 +69,15 @@ let state = {
   total: null,
   // Index into state.rows of the row shown in the detail sidebar, or null.
   selected: null,
+  // Result of getFrecencyBreakdown for the selected moz_places row, or null
+  // when the selection is not a place or the query has not returned yet.
+  frecency: null,
 };
 
 let filterTimer = null;
+// Same guard as `requestId`, for the breakdown: selecting rows quickly must
+// not let an earlier row's breakdown land under a later row's detail panel.
+let frecencyRequestId = 0;
 // Guards against out-of-order responses when the user switches tables or
 // types quickly: only the newest request is allowed to render.
 let requestId = 0;
@@ -196,6 +212,315 @@ function renderRows() {
   tbody.appendChild(fragment);
 }
 
+// Round for display without pretending to more precision than the number
+// carries. Scores and decay factors are the interesting ones.
+const round = (value, places = 2) =>
+  value === null || value === undefined || !Number.isFinite(Number(value))
+    ? "—"
+    : String(Number(Number(value).toFixed(places)));
+
+function enumName(names, value) {
+  if (value === null || value === undefined) {
+    return "—";
+  }
+  return names[value] ? `${names[value]} (${value})` : String(value);
+}
+
+/**
+ * Explain, in the terms the SQL uses, why a sample got the weight it did.
+ * The three tiers come from the CASE in calculate_frecency: a bookmark-ish or
+ * typed visit gets high/veryHigh, an ordinary non-redirect visit gets
+ * medium/high, and everything else gets low.
+ */
+function describeWeight(sample, prefs) {
+  if (sample.isBookmarkFallback) {
+    return "no visits; bookmark dateAdded used as the only sample";
+  }
+
+  const type = sample.effectiveVisitType;
+  const reasons = [];
+
+  if (type === 3) {
+    reasons.push("visit came from a bookmark (type BOOKMARK)");
+  } else if (sample.source === 2) {
+    reasons.push("visit source is BOOKMARKED");
+  } else if (type === 2 && sample.weight >= prefs.highWeight) {
+    reasons.push("typed visit, not search/sponsored, not a redirect");
+  } else if (sample.weight === prefs.lowWeight) {
+    if (sample.isRedirectSource) {
+      reasons.push("visit redirects onward, so it is a redirect hop");
+    } else if ([4, 8, 9].includes(type)) {
+      reasons.push(`visit type ${enumName(VISIT_TYPES, type)} is not credited`);
+    } else if (sample.source === 1) {
+      reasons.push("visit source is SPONSORED");
+    } else {
+      reasons.push("treated as a redirect");
+    }
+  } else {
+    reasons.push("ordinary visit, not a redirect");
+  }
+
+  if (sample.isRedirectTarget) {
+    reasons.push("redirect target, so the source visit's type was used");
+  }
+  if (sample.isInteresting) {
+    reasons.push("interesting (enough view time or keypresses), so upgraded");
+  }
+
+  return reasons.join("; ");
+}
+
+function addDetailRow(fragment, label, value, extra) {
+  const dt = document.createElement("dt");
+  dt.textContent = label;
+  const dd = document.createElement("dd");
+  dd.textContent = value;
+  if (extra) {
+    const note = document.createElement("span");
+    note.className = "raw";
+    note.textContent = extra;
+    dd.appendChild(note);
+  }
+  fragment.appendChild(dt);
+  fragment.appendChild(dd);
+}
+
+/**
+ * Render the frecency breakdown for a moz_places row: one line per sampled
+ * visit showing its weight and decay, then the aggregation that turns those
+ * scores into the stored integer.
+ *
+ * The stored value is not the score itself. calculate_frecency stores
+ * `reference.days + ln(mean_score * count_multiplier) / lambda`, which is the
+ * day number on which the decaying score would fall to 1 — that is why
+ * frecency is a five-digit number that creeps upward over time rather than a
+ * raw score, and why comparing two pages only means anything on the same day.
+ */
+function renderFrecency(container) {
+  container.textContent = "";
+  const data = state.frecency;
+  if (!data) {
+    return;
+  }
+
+  const section = document.createElement("section");
+  section.className = "frecency";
+
+  const heading = document.createElement("h3");
+  heading.textContent = "Frecency breakdown";
+  section.appendChild(heading);
+
+  if (data.pending || data.error) {
+    const note = document.createElement("p");
+    note.className = "frecency-note";
+    note.textContent = data.error ?? "Computing…";
+    section.appendChild(note);
+    container.appendChild(section);
+    return;
+  }
+
+  const { prefs } = data;
+
+  const summary = document.createElement("dl");
+  summary.className = "frecency-summary";
+
+  if (data.isPlaceUri) {
+    addDetailRow(
+      summary,
+      "place: URI",
+      "0",
+      "calculate_frecency returns 0 for place: URIs before any sampling"
+    );
+  }
+
+  addDetailRow(
+    summary,
+    "stored frecency",
+    String(data.storedFrecency),
+    data.recalcFrecency
+      ? "recalc_frecency is set: the stored value is stale and pending recalculation"
+      : null
+  );
+
+  // Recomputing here can disagree with the stored value when visits have been
+  // recorded since the last recalculation, which is worth seeing rather than
+  // hiding.
+  addDetailRow(
+    summary,
+    "recomputed now",
+    String(data.computedFrecency ?? "—"),
+    data.computedFrecency !== data.storedFrecency
+      ? "differs from the stored value"
+      : null
+  );
+
+  section.appendChild(summary);
+
+  if (!data.samples.length) {
+    const note = document.createElement("p");
+    note.className = "frecency-note";
+    note.textContent =
+      "No sampled visits and no bookmark, so there is nothing to score.";
+    section.appendChild(note);
+    container.appendChild(section);
+    return;
+  }
+
+  // Per-sample table: the weight column is the CASE result, decay is
+  // exp(-lambda * age), and score is their product.
+  const table = document.createElement("table");
+  table.className = "frecency-samples";
+
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  for (const label of [
+    "visit date",
+    "type",
+    "source",
+    "weight",
+    "age (d)",
+    "decay",
+    "score",
+  ]) {
+    const th = document.createElement("th");
+    th.textContent = label;
+    headRow.appendChild(th);
+  }
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  for (const sample of data.samples) {
+    const tr = document.createElement("tr");
+    // The weight rule is long, so it lives in the row tooltip rather than a
+    // column of its own.
+    tr.title = describeWeight(sample, prefs);
+
+    const cells = [
+      formatTime(sample.visitDate, 1000),
+      sample.isBookmarkFallback
+        ? "BOOKMARK dateAdded"
+        : enumName(VISIT_TYPES, sample.effectiveVisitType),
+      sample.isBookmarkFallback ? "—" : enumName(VISIT_SOURCES, sample.source),
+      String(sample.weight),
+      round(sample.ageDays, 0),
+      round(sample.decay, 3),
+      round(sample.score),
+    ];
+    for (const [i, text] of cells.entries()) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      if (i >= 3) {
+        td.classList.add("num");
+      }
+      tr.appendChild(td);
+    }
+
+    if (sample.isInteresting) {
+      tr.classList.add("interesting");
+    }
+    if (sample.visitId === null && !sample.isBookmarkFallback) {
+      // A virtual visit: an interaction with no matching moz_historyvisits row.
+      tr.classList.add("virtual");
+    }
+
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  section.appendChild(table);
+
+  const meanScore = data.samplesCount ? data.scoreSum / data.samplesCount : 0;
+  const scaled = meanScore * data.countMultiplier;
+
+  const math = document.createElement("dl");
+  math.className = "frecency-summary";
+
+  addDetailRow(
+    math,
+    "sum of scores",
+    round(data.scoreSum),
+    `over ${data.samplesCount} sample${data.samplesCount === 1 ? "" : "s"}`
+  );
+  addDetailRow(math, "mean score", round(meanScore), "sum / samples_count");
+  addDetailRow(
+    math,
+    "count multiplier",
+    String(data.countMultiplier),
+    `MAX(visit_count ${data.visitCount}, samples_count ${data.samplesCount})`
+  );
+  addDetailRow(
+    math,
+    "scaled score",
+    round(scaled),
+    "mean score × count multiplier"
+  );
+  addDetailRow(
+    math,
+    "half-life",
+    `${prefs.halfLifeDays} days`,
+    `lambda = ln(2) / ${prefs.halfLifeDays} = ${round(data.lambda, 5)}`
+  );
+  addDetailRow(
+    math,
+    "reference day",
+    String(data.referenceDays),
+    `${formatTime(data.referenceDays * 86400000000, 1000)} — the newest sample, which everything decays toward`
+  );
+  addDetailRow(
+    math,
+    "frecency",
+    String(data.computedFrecency ?? "—"),
+    `reference_days + ln(${round(scaled)}) / lambda — the day the score decays to 1, not the score itself`
+  );
+
+  section.appendChild(math);
+
+  const weights = document.createElement("p");
+  weights.className = "frecency-note";
+  weights.textContent =
+    `Weights: low ${prefs.lowWeight}, medium ${prefs.mediumWeight}, ` +
+    `high ${prefs.highWeight}, veryHigh ${prefs.veryHighWeight}. ` +
+    `Sampling the ${prefs.numSampledVisits} most recent visits. ` +
+    `A visit counts as interesting at ${prefs.viewTimeSeconds}s of view time, ` +
+    `or ${prefs.viewTimeIfManyKeypressesSeconds}s with ${prefs.manyKeypresses}+ keypresses.`;
+  section.appendChild(weights);
+
+  container.appendChild(section);
+}
+
+/**
+ * Fetch the breakdown for the selected moz_places row and re-render the panel
+ * when it lands. Other tables have no frecency, so nothing is requested.
+ */
+async function loadFrecency(row) {
+  const id = ++frecencyRequestId;
+  state.frecency = null;
+
+  if (state.current.name !== "moz_places" || typeof row?.id !== "number") {
+    return;
+  }
+
+  state.frecency = { pending: true };
+
+  try {
+    const data = await browser.experiments.places.getFrecencyBreakdown({
+      pageId: row.id,
+    });
+    if (id !== frecencyRequestId) {
+      return;
+    }
+    state.frecency = data;
+  } catch (e) {
+    if (id !== frecencyRequestId) {
+      return;
+    }
+    state.frecency = { error: `Could not compute breakdown: ${e.message}` };
+    console.error(e);
+  }
+
+  renderFrecency($("frecency"));
+}
+
 /**
  * Render every column of the selected row into the sidebar. Unlike the grid,
  * nothing here is truncated: values wrap, which is the point of the panel for
@@ -208,6 +533,7 @@ function renderDetails() {
 
   if (state.selected === null || !state.rows[state.selected]) {
     panel.hidden = true;
+    $("frecency").textContent = "";
     return;
   }
 
@@ -240,6 +566,7 @@ function renderDetails() {
   }
 
   body.appendChild(fragment);
+  renderFrecency($("frecency"));
   panel.hidden = false;
 }
 
@@ -249,11 +576,17 @@ function selectRow(index) {
   for (const [i, tr] of [...$("rows").children].entries()) {
     tr.classList.toggle("selected", i === index);
   }
+  // Kick off the breakdown first so renderDetails paints the pending state,
+  // then let it repaint when the query returns.
+  loadFrecency(state.rows[index]);
   renderDetails();
 }
 
 function clearSelection() {
   state.selected = null;
+  // Invalidate any in-flight breakdown so it cannot render into a closed panel.
+  frecencyRequestId++;
+  state.frecency = null;
   for (const tr of $("rows").children) {
     tr.classList.remove("selected");
   }
@@ -295,6 +628,8 @@ async function load() {
     // Row indices refer to different records after a sort, filter or table
     // change, so a carried-over selection would point at the wrong row.
     state.selected = null;
+    frecencyRequestId++;
+    state.frecency = null;
 
     $("title").textContent = state.current.label ?? state.current.name;
     renderHeader();

@@ -73,6 +73,29 @@
             }
           }
         ]
+      },
+      {
+        "name": "getFrecencyBreakdown",
+        "type": "function",
+        "description": "Re-run the calculate_frecency query for one page, returning the sampled visits, their weights and decay, and the terms of the final formula.",
+        "async": true,
+        "parameters": [
+          {
+            "type": "object",
+            "name": "options",
+            "properties": {
+              "pageId": {
+                "type": "integer",
+                "description": "The moz_places id to explain."
+              },
+              "isRedirect": {
+                "type": "boolean",
+                "optional": true,
+                "description": "Whether to compute as if the page were a redirect target, matching calculate_frecency's second argument."
+              }
+            }
+          }
+        ]
       }
     ]
   }
