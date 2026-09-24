@@ -19,6 +19,10 @@ try {
   ));
 }
 
+const { ExtensionUtils } = ChromeUtils.importESModule(
+  "resource://gre/modules/ExtensionUtils.sys.mjs"
+);
+
 const DEFAULT_LIMIT = 1000;
 
 // The parameters calculate_frecency binds from StaticPrefs, with the same
@@ -127,10 +131,14 @@ async function getTables() {
     for (const schema of schemas) {
       // `schema` comes from pragma_database_list, not from the caller, so it is
       // safe to interpolate. It cannot be bound as a parameter.
+      //
+      // The LIKE pattern is bound even though it is a constant: Sqlite.sys.mjs
+      // rejects any statement with a literal LIKE pattern.
       const rows = await db.execute(
         `SELECT name FROM "${schema}".sqlite_master
-         WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'
-         ORDER BY name`
+         WHERE type IN ('table', 'view') AND name NOT LIKE :internal
+         ORDER BY name`,
+        { internal: "sqlite_%" }
       );
       for (const row of rows) {
         const name = row.getResultByName("name");
@@ -493,14 +501,28 @@ async function getFrecencyBreakdown({ pageId, isRedirect = false }) {
   });
 }
 
+// WebExtensions replaces any error thrown from here that is not an
+// ExtensionError with "An unexpected error occurred", leaving the real one only
+// in the Browser Console. Rewrapping passes the message through to the viewer,
+// which is only ever shown to the person debugging their own profile.
+const exposeErrors =
+  fn =>
+  async (...args) => {
+    try {
+      return await fn(...args);
+    } catch (e) {
+      throw new ExtensionUtils.ExtensionError(e?.message ?? String(e));
+    }
+  };
+
 var places = class extends ExtensionAPI {
   getAPI() {
     return {
       experiments: {
         places: {
-          getTables,
-          getRows,
-          getFrecencyBreakdown,
+          getTables: exposeErrors(getTables),
+          getRows: exposeErrors(getRows),
+          getFrecencyBreakdown: exposeErrors(getFrecencyBreakdown),
         },
       },
     };
