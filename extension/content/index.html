@@ -24,6 +24,7 @@
           </select>
         </label>
         <button id="reload" type="button">Reload</button>
+        <button id="toggleBenchmark" type="button">Frecency benchmark</button>
         <span id="status" role="status"></span>
       </div>
     </header>
@@ -47,6 +48,42 @@
         <div id="frecency"></div>
       </aside>
     </div>
+
+    <section id="benchmark" hidden>
+      <div class="controls">
+        <label>
+          Pages
+          <select id="benchmarkSize">
+            <option value="100">100</option>
+            <option value="500" selected>500</option>
+            <option value="2000">2000</option>
+          </select>
+        </label>
+        <label>
+          Runs per page
+          <select id="benchmarkIterations">
+            <option value="1">1</option>
+            <option value="5" selected>5</option>
+            <option value="20">20</option>
+          </select>
+        </label>
+        <button id="runBenchmark" type="button">Run</button>
+        <button id="exportBenchmark" type="button" disabled>Export CSV</button>
+        <span id="benchmarkStatus" role="status"></span>
+      </div>
+      <p class="benchmark-note">
+        Calls the real <code>calculate_frecency</code> synchronously on the
+        main thread, through Places' main connection, so the browser can stutter
+        while a page is being timed. It only reads. Pages are picked at random,
+        plus the busiest tenth as many again, since those are where the cost
+        shows. Each page gets one untimed warm-up call, and the chart plots the
+        median of the timed calls against how many
+        <code>moz_historyvisits</code> rows the page has.
+      </p>
+      <dl id="benchmarkSummary" class="benchmark-summary"></dl>
+      <div id="benchmarkChart" class="benchmark-chart"></div>
+      <div id="benchmarkSlowest"></div>
+    </section>
 
     <script src="script.mjs" type="module"></script>
   </body>

@@ -96,6 +96,34 @@
             }
           }
         ]
+      },
+      {
+        "name": "benchmarkFrecency",
+        "type": "function",
+        "description": "Time the real calculate_frecency function for a sample of pages, on the main thread against Places' main connection. Returns per-page timings alongside each page's visit count.",
+        "async": true,
+        "parameters": [
+          {
+            "type": "object",
+            "name": "options",
+            "properties": {
+              "sampleSize": {
+                "type": "integer",
+                "optional": true,
+                "minimum": 1,
+                "maximum": 10000,
+                "description": "Number of random pages to time. The busiest tenth as many again are added on top."
+              },
+              "iterations": {
+                "type": "integer",
+                "optional": true,
+                "minimum": 1,
+                "maximum": 100,
+                "description": "Timed calls per page, after one warm-up call. The median is reported."
+              }
+            }
+          }
+        ]
       }
     ]
   }

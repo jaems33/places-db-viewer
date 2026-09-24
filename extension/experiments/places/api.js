@@ -501,6 +501,139 @@ async function getFrecencyBreakdown({ pageId, isRedirect = false }) {
   });
 }
 
+// The benchmark samples mostly at random, which in a real profile is mostly
+// pages with a visit or two, so the pages with the most visits are added on
+// top: they are where the cost of the query shows.
+const BENCHMARK_TOP_FRACTION = 0.1;
+
+async function sampleBenchmarkPages(sampleSize) {
+  const top = Math.ceil(sampleSize * BENCHMARK_TOP_FRACTION);
+  return withDb(async db => {
+    // `visits` counts what sampled_visits reads for the page, which is what the
+    // query's cost follows. visit_count only counts some visit types and is
+    // used here just to find the busiest pages through its index.
+    const rows = await db.execute(
+      `WITH picked AS (
+         SELECT id FROM (
+           SELECT id FROM moz_places ORDER BY visit_count DESC LIMIT :top
+         )
+         UNION
+         SELECT id FROM (
+           SELECT id FROM moz_places ORDER BY random() LIMIT :random
+         )
+       )
+       SELECT h.id, h.url, h.visit_count,
+         (SELECT count(*) FROM moz_historyvisits v
+          WHERE v.place_id = h.id) AS visits
+       FROM picked JOIN moz_places h USING (id)`,
+      { top, random: Math.max(sampleSize - top, 0) }
+    );
+    const countRow = await db.execute(
+      "SELECT COUNT(*) AS count FROM moz_places"
+    );
+    return {
+      totalPages: countRow[0].getResultByName("count"),
+      pages: rows.map(row => ({
+        pageId: row.getResultByName("id"),
+        url: row.getResultByName("url"),
+        visitCount: row.getResultByName("visit_count"),
+        visits: row.getResultByName("visits"),
+      })),
+    };
+  });
+}
+
+const median = values => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+};
+
+// Hand the main thread back between pages, so a long run does not freeze the
+// browser.
+const yieldToEventLoop = () =>
+  new Promise(resolve => Services.tm.dispatchToMainThread(resolve));
+
+/**
+ * Time the real calculate_frecency for a sample of pages.
+ *
+ * This is the one place the viewer leaves the read-only clone. The function is
+ * copied to clones, but it runs its query through Database::GetStatement, i.e.
+ * on Places' main connection: on the main thread that uses the main-thread
+ * statement cache, and on any other thread it uses the cache that belongs to
+ * Places' own async thread. The clone's queries run on the clone's thread, so
+ * calling it there would use that cache from a thread it was not built for.
+ * Calling it synchronously on the main thread, through the main connection,
+ * is how Places itself can call it safely.
+ *
+ * Only SELECT calculate_frecency(...) is run on that connection, and the
+ * function only reads.
+ *
+ * Each call is timed on its own with ChromeUtils.now(), which is not clamped
+ * in the parent process. Every page gets one untimed warm-up call first, so
+ * compiling the inner statement and loading its pages into the cache do not
+ * count, then `iterations` timed ones, of which the median is reported. The
+ * main connection is shared with Places' async thread, so a call can wait on
+ * a lock Places is holding; the median ignores most of that.
+ */
+async function benchmarkFrecency({ sampleSize = 200, iterations = 5 }) {
+  const { totalPages, pages } = await sampleBenchmarkPages(sampleSize);
+
+  const conn = PlacesUtils.history.DBConnection;
+  const stmt = conn.createStatement(
+    "SELECT calculate_frecency(:pageId, 0) AS frecency"
+  );
+  // The same round trip minus the function, to show what part of each
+  // timing is mozStorage rather than calculate_frecency.
+  const baselineStmt = conn.createStatement("SELECT :pageId AS frecency");
+
+  const time = (statement, pageId) => {
+    statement.params.pageId = pageId;
+    const start = ChromeUtils.now();
+    statement.executeStep();
+    const frecency = statement.row.frecency;
+    const elapsed = ChromeUtils.now() - start;
+    statement.reset();
+    return { elapsed, frecency };
+  };
+
+  const started = ChromeUtils.now();
+  try {
+    const baselineRuns = [];
+    for (let i = 0; i < 200; i++) {
+      baselineRuns.push(time(baselineStmt, 1).elapsed);
+    }
+
+    const results = [];
+    for (const page of pages) {
+      const { frecency } = time(stmt, page.pageId);
+      const runs = [];
+      for (let i = 0; i < iterations; i++) {
+        runs.push(time(stmt, page.pageId).elapsed);
+      }
+      results.push({
+        ...page,
+        frecency,
+        medianMs: median(runs),
+        minMs: Math.min(...runs),
+        maxMs: Math.max(...runs),
+      });
+      await yieldToEventLoop();
+    }
+
+    return {
+      totalPages,
+      iterations,
+      baselineMs: median(baselineRuns),
+      elapsedMs: ChromeUtils.now() - started,
+      results,
+    };
+  } finally {
+    stmt.finalize();
+    baselineStmt.finalize();
+  }
+}
+
 // WebExtensions replaces any error thrown from here that is not an
 // ExtensionError with "An unexpected error occurred", leaving the real one only
 // in the Browser Console. Rewrapping passes the message through to the viewer,
@@ -523,6 +656,7 @@ var places = class extends ExtensionAPI {
           getTables: exposeErrors(getTables),
           getRows: exposeErrors(getRows),
           getFrecencyBreakdown: exposeErrors(getFrecencyBreakdown),
+          benchmarkFrecency: exposeErrors(benchmarkFrecency),
         },
       },
     };

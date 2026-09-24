@@ -293,3 +293,140 @@ tbody tr.selected:hover {
 tbody tr {
   cursor: pointer;
 }
+
+#main[hidden] {
+  display: none;
+}
+
+/* Frecency benchmark view, shown in place of the grid. */
+#benchmark {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+  /* Chart colours by role, stepped separately for each scheme. */
+  --series-1: #2a78d6;
+  --chart-surface: Canvas;
+}
+
+@media (prefers-color-scheme: dark) {
+  #benchmark {
+    --series-1: #3987e5;
+  }
+}
+
+#benchmarkStatus {
+  opacity: 0.7;
+}
+
+.benchmark-note {
+  margin: 0 0 12px;
+  max-width: 80ch;
+  opacity: 0.65;
+  line-height: 1.45;
+}
+
+.benchmark-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 28px;
+  margin: 0 0 12px;
+}
+
+.benchmark-summary dt {
+  opacity: 0.65;
+}
+
+.benchmark-summary dd {
+  margin: 2px 0 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.benchmark-chart {
+  position: relative;
+  min-height: 360px;
+  background: var(--chart-surface);
+}
+
+.benchmark-chart svg {
+  display: block;
+  overflow: visible;
+}
+
+.benchmark-chart .grid line {
+  stroke: color-mix(in srgb, currentColor 12%, transparent);
+  stroke-width: 1;
+}
+
+.benchmark-chart .axis text {
+  fill: currentColor;
+  opacity: 0.65;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.benchmark-chart .axis .axis-title {
+  opacity: 0.8;
+}
+
+/* Surface-coloured ring so overlapping dots stay distinct. */
+.benchmark-chart .dots circle {
+  fill: var(--series-1);
+  fill-opacity: 0.75;
+  stroke: var(--chart-surface);
+  stroke-width: 2;
+}
+
+.benchmark-chart .highlight {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  pointer-events: none;
+}
+
+.benchmark-chart .hit-area {
+  fill: transparent;
+}
+
+.benchmark-tooltip {
+  position: absolute;
+  z-index: 2;
+  max-width: 420px;
+  padding: 6px 8px;
+  background: Field;
+  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-radius: 4px;
+  pointer-events: none;
+  line-height: 1.4;
+}
+
+.benchmark-tooltip .url {
+  font-family: monospace;
+  overflow-wrap: anywhere;
+}
+
+.benchmark-tooltip[hidden] {
+  display: none;
+}
+
+#benchmarkSlowest h3 {
+  margin: 16px 0 6px;
+  font-size: 12px;
+}
+
+.benchmark-slowest th {
+  position: static;
+  cursor: default;
+}
+
+.benchmark-slowest th:hover {
+  background: Field;
+}
+
+.benchmark-slowest .num {
+  text-align: right;
+}
+
+.benchmark-slowest tbody tr {
+  cursor: default;
+}

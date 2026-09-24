@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+import { initBenchmark } from "./benchmark.mjs";
+
 // Columns holding a PRTime (microseconds since epoch) rather than a plain
 // integer, keyed by table. These are rendered as dates with the raw value in
 // a tooltip. Anything not listed is shown verbatim.
@@ -769,7 +771,28 @@ async function init() {
   load();
 }
 
+/**
+ * Swap the grid for the frecency benchmark, or back. The table controls stay
+ * visible but only apply to the grid, so they are disabled while hidden.
+ */
+function showBenchmark(show) {
+  $("main").hidden = show;
+  $("benchmark").hidden = !show;
+  $("toggleBenchmark").textContent = show ? "Back to table" : "Frecency benchmark";
+  for (const id of ["filter", "limit", "reload"]) {
+    $(id).disabled = show;
+  }
+  $("title").textContent = show
+    ? "calculate_frecency benchmark"
+    : (state.current?.label ?? state.current?.name ?? "");
+}
+
+$("toggleBenchmark").addEventListener("click", () =>
+  showBenchmark($("benchmark").hidden)
+);
+
 $("table").addEventListener("change", event => {
+  showBenchmark(false);
   const [schema, ...rest] = event.target.value.split(".");
   const name = rest.join(".");
   state.current = state.tables.find(
@@ -797,4 +820,5 @@ $("filter").addEventListener("input", () => {
   filterTimer = setTimeout(load, 200);
 });
 
+initBenchmark();
 init();
