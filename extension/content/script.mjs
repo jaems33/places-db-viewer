@@ -54,6 +54,19 @@ const DEFAULT_TABLE = { schema: "main", name: "moz_places" };
 
 const $ = id => document.getElementById(id);
 
+const MIN_COLUMN_WIDTH = 40;
+
+// Column widths the user has dragged, keyed by "schema.table" and then column
+// name, so switching tables and back keeps them for the session.
+const columnWidths = new Map();
+
+// Widths are applied as one rule per resized column in a constructed
+// stylesheet, rather than an inline style on every cell of a possibly
+// 10000-row grid. CSSOM is also exempt from the CSP's style-src, which would
+// block an injected <style> element.
+const widthSheet = new CSSStyleSheet();
+document.adoptedStyleSheets = [...document.adoptedStyleSheets, widthSheet];
+
 let state = {
   tables: [],
   current: DEFAULT_TABLE,
@@ -179,8 +192,94 @@ function renderHeader() {
       state.orderBy = column;
       load();
     });
+
+    const handle = document.createElement("span");
+    handle.className = "resize-handle";
+    handle.title = "Drag to resize, double-click to reset";
+    handle.addEventListener("pointerdown", event =>
+      startResize(event, th, column)
+    );
+    // Neither finishing a drag nor double-clicking the handle should sort.
+    handle.addEventListener("click", event => event.stopPropagation());
+    handle.addEventListener("dblclick", event => {
+      event.stopPropagation();
+      currentWidths().delete(column);
+      applyColumnWidths();
+    });
+    th.appendChild(handle);
+
     headerRow.appendChild(th);
   }
+
+  // Rules target columns by position, which changes with the table.
+  applyColumnWidths();
+}
+
+function currentWidths() {
+  const key = `${state.current.schema}.${state.current.name}`;
+  if (!columnWidths.has(key)) {
+    columnWidths.set(key, new Map());
+  }
+  return columnWidths.get(key);
+}
+
+function applyColumnWidths() {
+  const widths = currentWidths();
+  const rules = [];
+  for (const [index, column] of state.columns.entries()) {
+    const width = widths.get(column);
+    if (width === undefined) {
+      continue;
+    }
+    // Width, min and max are all pinned: the auto table layout would
+    // otherwise shrink the column, and the default max-width would cap it.
+    const n = index + 1;
+    rules.push(
+      `#headerRow > th:nth-child(${n}), #rows > tr > td:nth-child(${n}) {
+         width: ${width}px; min-width: ${width}px; max-width: ${width}px;
+       }`
+    );
+  }
+  widthSheet.replaceSync(rules.join("\n"));
+}
+
+function startResize(event, th, column) {
+  if (event.button !== 0) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+
+  const handle = event.currentTarget;
+  const style = getComputedStyle(th);
+  const padding =
+    parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+  const startWidth = th.getBoundingClientRect().width - padding;
+  const startX = event.clientX;
+  const widths = currentWidths();
+
+  // Re-laying out a large grid on every pointermove is slow, so apply at most
+  // once per frame.
+  let frame = null;
+  const onMove = moveEvent => {
+    const width = Math.round(startWidth + moveEvent.clientX - startX);
+    widths.set(column, Math.max(MIN_COLUMN_WIDTH, width));
+    frame ??= requestAnimationFrame(() => {
+      frame = null;
+      applyColumnWidths();
+    });
+  };
+  const onEnd = () => {
+    handle.removeEventListener("pointermove", onMove);
+    handle.removeEventListener("pointerup", onEnd);
+    handle.removeEventListener("pointercancel", onEnd);
+  };
+
+  // Capture keeps the drag going when the pointer leaves the narrow handle.
+  handle.setPointerCapture(event.pointerId);
+  handle.addEventListener("pointermove", onMove);
+  handle.addEventListener("pointerup", onEnd);
+  handle.addEventListener("pointercancel", onEnd);
 }
 
 function renderRows() {

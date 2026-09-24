@@ -231,6 +231,21 @@ th:hover {
   background: color-mix(in srgb, currentColor 10%, Field);
 }
 
+/* Drag handle on each header's right edge. th is already positioned (sticky),
+   so the handle anchors to it. */
+.resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+}
+
+.resize-handle:hover {
+  background: color-mix(in srgb, currentColor 25%, transparent);
+}
+
 /* Columns the viewer derives from another table, rather than columns of the
    table being shown. Italic so the distinction is visible without a legend. */
 th.derived {
