@@ -179,12 +179,13 @@ matches against every non-blob column of the selected table.
         api.js                         privileged code, runs the SQL
 
 `api.js` runs with full chrome privileges and talks to the database through
-`PlacesUtils.withConnectionWrapper`, which guarantees shutdown waits for
-in-flight queries.
+`PlacesUtils.promiseDBConnection`, Places' shared read-only clone of its
+connection. Places owns that connection and closes it at shutdown.
 
 ## Safety notes
 
-- The add-on only ever issues `SELECT` and `PRAGMA` statements; nothing writes.
+- The add-on only ever issues `SELECT` and `PRAGMA` statements, and runs them
+  on a read-only connection, so SQLite itself rejects any write.
 - Table and column names cannot be bound as SQL parameters, so every
   identifier is validated against the live database before being interpolated:
   the schema/table pair must match a row from `sqlite_master`, and `orderBy`
@@ -193,6 +194,13 @@ in-flight queries.
   escaped so a literal `%` or `_` is matched literally.
 - The UI builds cells with `textContent`, never `innerHTML`: page titles and
   URLs are attacker-controlled content.
+- The manifest's content security policy restricts the viewer page and
+  background script to the add-on's own files and forbids every network
+  connection (`connect-src 'none'`), so they cannot send data anywhere. CSP
+  does not apply to `api.js`, which runs with chrome privileges; it is the one
+  file to audit for what the add-on can reach, and it imports nothing beyond
+  `PlacesUtils` and touches nothing but the database and `Services.prefs`
+  reads.
 
 ## Other options
 

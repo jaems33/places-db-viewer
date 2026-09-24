@@ -17,6 +17,7 @@
   "permissions": [
     "tabs"
   ],
+  "content_security_policy": "default-src 'self'; script-src 'self'; object-src 'none'; connect-src 'none'",
   "browser_action": {
     "default_title": "Places DB Viewer"
   },

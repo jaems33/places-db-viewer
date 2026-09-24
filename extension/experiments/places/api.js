@@ -96,8 +96,13 @@ const DERIVED_COLUMNS = {
 const derivedFor = resolved =>
   DERIVED_COLUMNS[`${resolved.schema}.${resolved.name}`] ?? null;
 
-function withDb(name, task) {
-  return PlacesUtils.withConnectionWrapper(`PlacesDBViewer: ${name}`, task);
+// Every query goes through Places' read-only clone of its connection, so the
+// viewer cannot modify the database even by mistake: SQLite rejects any write
+// on it. mozStorage re-attaches the original's databases when cloning, so the
+// `favicons` schema is available here too.
+async function withDb(task) {
+  const db = await PlacesUtils.promiseDBConnection();
+  return task(db);
 }
 
 /**
@@ -114,7 +119,7 @@ function withDb(name, task) {
  * moz_places_metadata_snapshots; newer ones add tables).
  */
 async function getTables() {
-  return withDb("getTables", async db => {
+  return withDb(async db => {
     const schemaRows = await db.execute("SELECT name FROM pragma_database_list");
     const schemas = schemaRows.map(row => row.getResultByName("name"));
 
@@ -178,7 +183,7 @@ async function getRows(options) {
 
   const resolved = await resolveTable(schema, table);
 
-  return withDb("getRows", async db => {
+  return withDb(async db => {
     const columns = await readColumns(db, resolved.schema, resolved.name);
     const derived = derivedFor(resolved);
     const derivedNames = derived ? Object.keys(derived.columns) : [];
@@ -391,7 +396,7 @@ async function getFrecencyBreakdown({ pageId, isRedirect = false }) {
   const prefs = readFrecencyPrefs();
   const params = { ...prefs, pageId, isRedirect: isRedirect ? 1 : 0 };
 
-  return withDb("getFrecencyBreakdown", async db => {
+  return withDb(async db => {
     const placeRows = await db.execute(
       `SELECT url, title, visit_count, frecency, recalc_frecency
        FROM moz_places WHERE id = :pageId`,
