@@ -63,10 +63,9 @@ const isBlob = column => column.type === "BLOB";
 // raw rows are hard to read on their own. Each entry supplies the JOINs it
 // needs and a SELECT expression per derived column; both are constants here,
 // never caller input, so they are interpolated directly.
-//
-// moz_historyvisits stores two moz_places ids and nothing else identifying,
-// so a visit row cannot be read without cross-referencing another table.
 const DERIVED_COLUMNS = {
+  // moz_historyvisits stores two moz_places ids and nothing else identifying,
+  // so a visit row cannot be read without cross-referencing another table.
   "main.moz_historyvisits": {
     joins: `LEFT JOIN "main"."moz_places" AS derived_place
               ON derived_place.id = "main"."moz_historyvisits".place_id
@@ -80,6 +79,16 @@ const DERIVED_COLUMNS = {
       // goes through moz_historyvisits first. A value of 0 means "no
       // referring visit" and matches no row, yielding NULL.
       from_visit_url: "derived_from_place.url",
+    },
+  },
+  // moz_inputhistory pairs what was typed with a moz_places id, so without
+  // the page it is unclear what a given input led to.
+  "main.moz_inputhistory": {
+    joins: `LEFT JOIN "main"."moz_places" AS derived_place
+              ON derived_place.id = "main"."moz_inputhistory".place_id`,
+    columns: {
+      place_url: "derived_place.url",
+      place_title: "derived_place.title",
     },
   },
 };
